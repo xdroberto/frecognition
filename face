@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, TextBox, Button
+from matplotlib.widgets import Slider, TextBox, Button, RectangleSelector
 import matplotlib.patches as patches
 import matplotlib.patheffects as pe
 import tkinter as tk
@@ -22,16 +22,21 @@ state = {
     'names': [],
     'skip': set(),
     'selected': None,
-    'date': '2025-05-24',
+    'date': '',
     'location': 'Fayetteville, AR',
     'footer_text': '',
     'export_name': 'annotated',
-    'text_selected': False,
     'current_image_path': IMG_PATH,
     'sensitivity': 5
 }
 
+def sanitize_filename(name: str) -> str:
+    """Return a safe filename by replacing invalid characters."""
+    valid = "-_.() "
+    return "".join(c if c.isalnum() or c in valid else "_" for c in name)
+
 rename_box = location_box = footer_box = export_box = None
+add_selector = None
 
 tk_root = tk.Tk()
 tk_root.withdraw()
@@ -44,16 +49,21 @@ def load_image(path):
         return False
     img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    dets1 = cascade.detectMultiScale(gray, 1.1, 5)
-    dets2 = cascade.detectMultiScale(gray, 1.05, 3)
-    faces = list(dets1)
-    for f2 in dets2:
-        if not any(overlap(f2, f1) for f1 in faces):
-            faces.append(f2)
-    faces = np.array(faces)
+    cascade_files = [
+        'haarcascade_frontalface_default.xml',
+        'haarcascade_frontalface_alt.xml',
+        'haarcascade_frontalface_alt2.xml'
+    ]
+    detections = []
+    for cf in cascade_files:
+        cas = cv2.CascadeClassifier(cv2.data.haarcascades + cf)
+        det = cas.detectMultiScale(gray, 1.1, 5)
+        for f in det:
+            if not any(overlap(f, d) for d in detections):
+                detections.append(f)
+    faces = np.array(detections)
     state['names'] = [f'Person {i+1}' for i in range(len(faces))]
-    state.update({'skip': set(), 'selected': None, 'text_selected': False, 'current_image_path': path})
+    state.update({'skip': set(), 'selected': None, 'current_image_path': path})
     basename = os.path.splitext(os.path.basename(path))[0]
     state['export_name'] = f"{basename}_annotated"
     if export_box:
@@ -88,7 +98,12 @@ def draw(target_ax=None):
     a.imshow(img)
     a.axis('off')
     # Texto de fecha y ubicación
-    for i, txt in enumerate([state['date'], state['location']]):
+    header_items = []
+    if state['date']:
+        header_items.append(state['date'])
+    if state['location']:
+        header_items.append(state['location'])
+    for i, txt in enumerate(header_items):
         a.text(0.01, 0.98 - i*0.04, txt, transform=a.transAxes,
                fontsize=12, color='yellow', va='top',
                path_effects=[pe.Stroke(linewidth=3, foreground='black'), pe.Normal()])
@@ -98,6 +113,7 @@ def draw(target_ax=None):
                fontsize=10, color='white', ha='center', va='top',
                bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
     # Rectángulos y etiquetas de caras
+    used_labels = []
     for i, (x, y, w, h) in enumerate(faces):
         if i in state['skip']: continue
         m = state['margin']
@@ -106,8 +122,18 @@ def draw(target_ax=None):
         rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
                                  linewidth=lw, edgecolor=col, facecolor='none')
         a.add_patch(rect)
-        a.text(x-m, y-m-5, state['names'][i], fontsize=10,
-               color=col, va='bottom',
+        label_y = y-m-5
+        valign = 'bottom'
+        if label_y < 5:
+            label_y = y + h + m + 5
+            valign = 'top'
+        label_x = x - m
+        while any(abs(label_y - py) < 12 and abs(label_x - px) < 50 for px, py in used_labels):
+            label_y += 12
+        used_labels.append((label_x, label_y))
+        a.text(label_x, label_y, state['names'][i], fontsize=10,
+               color=col, va=valign,
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7),
                path_effects=[pe.Stroke(linewidth=2, foreground='black'), pe.Normal()])
     # Información inferior
     info = f"Caras: {len(faces)} | Anotadas: {len([i for i in range(len(faces)) if i not in state['skip']])}"
@@ -117,29 +143,6 @@ def draw(target_ax=None):
     if target_ax is None:
         fig.canvas.draw_idle()
 
-# Export usa la figura principal para mantener paridad exacta
-def export(event):
-     try:
-         # Redibuja para capturar el estado actual con todos los efectos
-         draw()
-         fig.canvas.draw()
-         filename = f"{state['export_name']}.png"
-         # Guardar conservando el facecolor de la figura y preservando transparencias
-         fig.savefig(
-             filename,
-             bbox_inches='tight',
-             pad_inches=0.1,
-             dpi=300,
-             facecolor=fig.get_facecolor(),
-             transparent=False
-         )
-         metadata = [
-             {'index': i, 'bbox': [int(x), int(y), int(w), int(h)], 'name': state['names'][i]}
-             for i, (x, y, w, h) in enumerate(faces) if i not in state['skip']
-         ]
-         tk.messagebox.showinfo("Export Exitoso", f"Guardado: {filename}\nPersonas anotadas: {len(metadata)}")
-     except Exception as e:
-         tk.messagebox.showerror("Error de Export", str(e))
 
 def on_click(event):
     if event.inaxes != ax:
@@ -198,21 +201,48 @@ def skip_toggle(event):
         state['selected'] = None
         draw()
 
+def start_add_face(event):
+    global add_selector
+    if add_selector is None:
+        add_selector = RectangleSelector(ax, on_new_face, drawtype='box', useblit=True)
+        tk.messagebox.showinfo('Añadir cara', 'Dibuja un rectángulo en la imagen')
+
+def on_new_face(eclick, erelease):
+    global faces, add_selector
+    x1, y1 = int(eclick.xdata), int(eclick.ydata)
+    x2, y2 = int(erelease.xdata), int(erelease.ydata)
+    x, y = min(x1, x2), min(y1, y2)
+    w, h = abs(x2 - x1), abs(y2 - y1)
+    new_box = np.array([[x, y, w, h]])
+    if faces.size == 0:
+        faces = new_box
+    else:
+        faces = np.vstack([faces, new_box])
+    state['names'].append(f'Person {len(faces)}')
+    add_selector.set_active(False)
+    add_selector.disconnect_events()
+    add_selector = None
+    draw()
+
 def pick_date(event):
     try:
         current_date = state['date']
         new_date = tk.simpledialog.askstring(
-            'Seleccionar Fecha', 
-            f'Ingrese la fecha (YYYY-MM-DD)\nFecha actual: {current_date}',
+            'Seleccionar Fecha',
+            'Ingrese la fecha (YYYY-MM-DD)\nDeje vacío para no mostrar fecha:',
             initialvalue=current_date
         )
-        if new_date:
-            try:
-                datetime.datetime.strptime(new_date, '%Y-%m-%d')
-                state['date'] = new_date
+        if new_date is not None:
+            if new_date.strip() == '':
+                state['date'] = ''
                 draw()
-            except ValueError:
-                tk.messagebox.showerror("Error", "Formato de fecha inválido. Use YYYY-MM-DD")
+            else:
+                try:
+                    datetime.datetime.strptime(new_date, '%Y-%m-%d')
+                    state['date'] = new_date
+                    draw()
+                except ValueError:
+                    tk.messagebox.showerror('Error', 'Formato de fecha inválido. Use YYYY-MM-DD')
     except:
         pass
 
@@ -222,7 +252,10 @@ def footer_submit(text):
 
 def export_name_submit(text):
     if text.strip():
-        state['export_name'] = text.strip()
+        sanitized = sanitize_filename(text.strip()) or 'annotated'
+        state['export_name'] = sanitized
+        if export_box is not None:
+            export_box.set_val(state['export_name'])
 
 def select_image(event):
     try:
@@ -255,16 +288,26 @@ def redetect_faces(event=None):
     if 'img' not in globals():
         return
     try:
-        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        cascade_files = [
+            'haarcascade_frontalface_default.xml',
+            'haarcascade_frontalface_alt.xml',
+            'haarcascade_frontalface_alt2.xml'
+        ]
         sensitivity = int(state['sensitivity'])
-        faces_detected = cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.05 if sensitivity < 5 else 1.1, 
-            minNeighbors=sensitivity, 
-            minSize=(20, 20) if sensitivity < 5 else (30, 30)
-        )
+        detections = []
+        for cf in cascade_files:
+            cas = cv2.CascadeClassifier(cv2.data.haarcascades + cf)
+            det = cas.detectMultiScale(
+                gray,
+                scaleFactor=1.05 if sensitivity < 5 else 1.1,
+                minNeighbors=sensitivity,
+                minSize=(20, 20) if sensitivity < 5 else (30, 30)
+            )
+            for f in det:
+                if not any(overlap(f, d) for d in detections):
+                    detections.append(f)
         global faces
-        faces = np.array(faces_detected)
+        faces = np.array(detections)
         old_names = state['names'].copy()
         state['names'] = [old_names[i] if i < len(old_names) else f'Person {i+1}' for i in range(len(faces))]
         state['skip'] = {i for i in state['skip'] if i < len(faces)}
@@ -275,17 +318,24 @@ def redetect_faces(event=None):
         pass
 
 def update_sensitivity(val):
-    state['sensitivity'] = int(val)
+    state['sensitivity'] = int(float(val))
+    redetect_faces()
 
 def export(event):
     try:
-        export_image = f"{state['export_name']}.png"
+        base = sanitize_filename(state['export_name']) or 'annotated'
+        export_image = f"{base}.png"
         fig_export, ax_export = plt.subplots(figsize=(12, 9), dpi=150)
         fig_export.patch.set_facecolor('white')
         ax_export.imshow(img)
         ax_export.axis('off')
         fig_export.subplots_adjust(left=0, bottom=0, right=1, top=1)
-        for i, label in enumerate([state['date'], state['location']]):
+        header_items = []
+        if state['date']:
+            header_items.append(state['date'])
+        if state['location']:
+            header_items.append(state['location'])
+        for i, label in enumerate(header_items):
             y = 0.98 - i*0.04
             ax_export.text(0.01, y, label, transform=ax_export.transAxes,
                     fontsize=12, color='white', va='top', weight='bold',
@@ -294,6 +344,7 @@ def export(event):
             ax_export.text(0.5, 0.02, state['footer_text'], transform=ax_export.transAxes,
                     fontsize=11, color='white', ha='center', va='bottom',
                     bbox=dict(boxstyle="round,pad=0.4", facecolor='black', alpha=0.9))
+        used_labels = []
         for i, (x, y, w, h) in enumerate(faces):
             if i in state['skip']:
                 continue
@@ -303,16 +354,24 @@ def export(event):
             rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
                                    linewidth=lw, edgecolor=color, facecolor='none')
             ax_export.add_patch(rect)
-            ax_export.text(x-m, y-m-8, state['names'][i], fontsize=11, weight='bold',
-                    color=color, va='bottom',
+            label_y = y-m-8
+            valign = 'bottom'
+            if label_y < 5:
+                label_y = y + h + m + 8
+                valign = 'top'
+            label_x = x - m
+            while any(abs(label_y - py) < 12 and abs(label_x - px) < 50 for px, py in used_labels):
+                label_y += 12
+            used_labels.append((label_x, label_y))
+            ax_export.text(label_x, label_y, state['names'][i], fontsize=11, weight='bold',
+                    color=color, va=valign,
                     bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.9))
-        fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1, dpi=300, 
-                          facecolor='white', edgecolor='none')
+        fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1,
+                          dpi=300, facecolor='white', edgecolor='none')
         plt.close(fig_export)
-        metadata = [{'index': i, 'bbox': [int(x),int(y),int(w),int(h)], 'name': state['names'][i]}
-                    for i,(x,y,w,h) in enumerate(faces) if i not in state['skip']]
-        tk.messagebox.showinfo("Export Exitoso", 
-                               f"Imagen guardada: {export_image}\n\nPersonas anotadas: {len(metadata)}")
+        tk.messagebox.showinfo(
+            "Export Exitoso",
+            f"Imagen guardada: {export_image}")
     except Exception as e:
         tk.messagebox.showerror("Error de Export", str(e))
 
@@ -361,6 +420,9 @@ rename_box.on_submit(rename_submit)
 ax_skip = plt.axes([0.45, y3, 0.1, 0.03])
 btn_skip = Button(ax_skip, 'Omitir')
 btn_skip.on_clicked(skip_toggle)
+ax_add = plt.axes([0.57, y3, 0.15, 0.03])
+btn_add = Button(ax_add, 'Añadir cara')
+btn_add.on_clicked(start_add_face)
 
 # Fila 4: Fecha y ubicación
 
