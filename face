@@ -209,7 +209,10 @@ def footer_submit(text):
 
 def export_name_submit(text):
     if text.strip():
-        state['export_name'] = text.strip()
+        sanitized = sanitize_filename(text.strip()) or 'annotated'
+        state['export_name'] = sanitized
+        if export_box is not None:
+            export_box.set_val(state['export_name'])
 
 def select_image(event):
     try:
