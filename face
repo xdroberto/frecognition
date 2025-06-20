@@ -26,10 +26,14 @@ state = {
     'location': 'Fayetteville, AR',
     'footer_text': '',
     'export_name': 'annotated',
-    'text_selected': False,
     'current_image_path': IMG_PATH,
     'sensitivity': 5
 }
+
+def sanitize_filename(name: str) -> str:
+    """Return a safe filename by replacing invalid characters."""
+    valid = "-_.() "
+    return "".join(c if c.isalnum() or c in valid else "_" for c in name)
 
 rename_box = location_box = footer_box = export_box = None
 
@@ -53,7 +57,7 @@ def load_image(path):
             faces.append(f2)
     faces = np.array(faces)
     state['names'] = [f'Person {i+1}' for i in range(len(faces))]
-    state.update({'skip': set(), 'selected': None, 'text_selected': False, 'current_image_path': path})
+    state.update({'skip': set(), 'selected': None, 'current_image_path': path})
     basename = os.path.splitext(os.path.basename(path))[0]
     state['export_name'] = f"{basename}_annotated"
     if export_box:
@@ -106,8 +110,14 @@ def draw(target_ax=None):
         rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
                                  linewidth=lw, edgecolor=col, facecolor='none')
         a.add_patch(rect)
-        a.text(x-m, y-m-5, state['names'][i], fontsize=10,
-               color=col, va='bottom',
+        label_y = y-m-5
+        valign = 'bottom'
+        if label_y < 5:
+            label_y = y + h + m + 5
+            valign = 'top'
+        a.text(x-m, label_y, state['names'][i], fontsize=10,
+               color=col, va=valign,
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7),
                path_effects=[pe.Stroke(linewidth=2, foreground='black'), pe.Normal()])
     # Información inferior
     info = f"Caras: {len(faces)} | Anotadas: {len([i for i in range(len(faces)) if i not in state['skip']])}"
@@ -117,29 +127,6 @@ def draw(target_ax=None):
     if target_ax is None:
         fig.canvas.draw_idle()
 
-# Export usa la figura principal para mantener paridad exacta
-def export(event):
-     try:
-         # Redibuja para capturar el estado actual con todos los efectos
-         draw()
-         fig.canvas.draw()
-         filename = f"{state['export_name']}.png"
-         # Guardar conservando el facecolor de la figura y preservando transparencias
-         fig.savefig(
-             filename,
-             bbox_inches='tight',
-             pad_inches=0.1,
-             dpi=300,
-             facecolor=fig.get_facecolor(),
-             transparent=False
-         )
-         metadata = [
-             {'index': i, 'bbox': [int(x), int(y), int(w), int(h)], 'name': state['names'][i]}
-             for i, (x, y, w, h) in enumerate(faces) if i not in state['skip']
-         ]
-         tk.messagebox.showinfo("Export Exitoso", f"Guardado: {filename}\nPersonas anotadas: {len(metadata)}")
-     except Exception as e:
-         tk.messagebox.showerror("Error de Export", str(e))
 
 def on_click(event):
     if event.inaxes != ax:
@@ -275,11 +262,13 @@ def redetect_faces(event=None):
         pass
 
 def update_sensitivity(val):
-    state['sensitivity'] = int(val)
+    state['sensitivity'] = int(float(val))
+    redetect_faces()
 
 def export(event):
     try:
-        export_image = f"{state['export_name']}.png"
+        base = sanitize_filename(state['export_name']) or 'annotated'
+        export_image = f"{base}.png"
         fig_export, ax_export = plt.subplots(figsize=(12, 9), dpi=150)
         fig_export.patch.set_facecolor('white')
         ax_export.imshow(img)
@@ -303,16 +292,20 @@ def export(event):
             rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
                                    linewidth=lw, edgecolor=color, facecolor='none')
             ax_export.add_patch(rect)
-            ax_export.text(x-m, y-m-8, state['names'][i], fontsize=11, weight='bold',
-                    color=color, va='bottom',
+            label_y = y-m-8
+            valign = 'bottom'
+            if label_y < 5:
+                label_y = y + h + m + 8
+                valign = 'top'
+            ax_export.text(x-m, label_y, state['names'][i], fontsize=11, weight='bold',
+                    color=color, va=valign,
                     bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.9))
-        fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1, dpi=300, 
-                          facecolor='white', edgecolor='none')
+        fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1,
+                          dpi=300, facecolor='white', edgecolor='none')
         plt.close(fig_export)
-        metadata = [{'index': i, 'bbox': [int(x),int(y),int(w),int(h)], 'name': state['names'][i]}
-                    for i,(x,y,w,h) in enumerate(faces) if i not in state['skip']]
-        tk.messagebox.showinfo("Export Exitoso", 
-                               f"Imagen guardada: {export_image}\n\nPersonas anotadas: {len(metadata)}")
+        tk.messagebox.showinfo(
+            "Export Exitoso",
+            f"Imagen guardada: {export_image}")
     except Exception as e:
         tk.messagebox.showerror("Error de Export", str(e))
 
