@@ -117,30 +117,6 @@ def draw(target_ax=None):
     if target_ax is None:
         fig.canvas.draw_idle()
 
-# Export usa la figura principal para mantener paridad exacta
-def export(event):
-     try:
-         # Redibuja para capturar el estado actual con todos los efectos
-         draw()
-         fig.canvas.draw()
-         filename = f"{state['export_name']}.png"
-         # Guardar conservando el facecolor de la figura y preservando transparencias
-         fig.savefig(
-             filename,
-             bbox_inches='tight',
-             pad_inches=0.1,
-             dpi=300,
-             facecolor=fig.get_facecolor(),
-             transparent=False
-         )
-         metadata = [
-             {'index': i, 'bbox': [int(x), int(y), int(w), int(h)], 'name': state['names'][i]}
-             for i, (x, y, w, h) in enumerate(faces) if i not in state['skip']
-         ]
-         tk.messagebox.showinfo("Export Exitoso", f"Guardado: {filename}\nPersonas anotadas: {len(metadata)}")
-     except Exception as e:
-         tk.messagebox.showerror("Error de Export", str(e))
-
 def on_click(event):
     if event.inaxes != ax:
         return
