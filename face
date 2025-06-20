@@ -127,11 +127,7 @@ def draw(target_ax=None):
         if label_y < 5:
             label_y = y + h + m + 5
             valign = 'top'
-        label_x = x - m
-        while any(abs(label_y - py) < 12 and abs(label_x - px) < 50 for px, py in used_labels):
-            label_y += 12
-        used_labels.append((label_x, label_y))
-        a.text(label_x, label_y, state['names'][i], fontsize=10,
+            
                color=col, va=valign,
                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7),
                path_effects=[pe.Stroke(linewidth=2, foreground='black'), pe.Normal()])
@@ -359,11 +355,7 @@ def export(event):
             if label_y < 5:
                 label_y = y + h + m + 8
                 valign = 'top'
-            label_x = x - m
-            while any(abs(label_y - py) < 12 and abs(label_x - px) < 50 for px, py in used_labels):
-                label_y += 12
-            used_labels.append((label_x, label_y))
-            ax_export.text(label_x, label_y, state['names'][i], fontsize=11, weight='bold',
+                
                     color=color, va=valign,
                     bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.9))
         fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1,
