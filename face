@@ -1,0 +1,393 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider, TextBox, Button
+import matplotlib.patches as patches
+import matplotlib.patheffects as pe
+import tkinter as tk
+from tkinter.colorchooser import askcolor
+from tkinter import filedialog
+import tkinter.simpledialog
+import tkinter.messagebox
+import datetime
+import os
+
+# ---------------------- CONFIGURACIÓN ----------------------
+IMG_PATH = 'facial.png'
+
+state = {
+    'margin': 20,
+    'linewidth': 2,
+    'color': (0, 1, 0),
+    'names': [],
+    'skip': set(),
+    'selected': None,
+    'date': '2025-05-24',
+    'location': 'Fayetteville, AR',
+    'footer_text': '',
+    'export_name': 'annotated',
+    'text_selected': False,
+    'current_image_path': IMG_PATH,
+    'sensitivity': 5
+}
+
+rename_box = location_box = footer_box = export_box = None
+
+tk_root = tk.Tk()
+tk_root.withdraw()
+
+def load_image(path):
+    global img, gray, faces
+    img_bgr = cv2.imread(path)
+    if img_bgr is None:
+        tk.messagebox.showerror("Error", f"No se pudo cargar: {path}")
+        return False
+    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    dets1 = cascade.detectMultiScale(gray, 1.1, 5)
+    dets2 = cascade.detectMultiScale(gray, 1.05, 3)
+    faces = list(dets1)
+    for f2 in dets2:
+        if not any(overlap(f2, f1) for f1 in faces):
+            faces.append(f2)
+    faces = np.array(faces)
+    state['names'] = [f'Person {i+1}' for i in range(len(faces))]
+    state.update({'skip': set(), 'selected': None, 'text_selected': False, 'current_image_path': path})
+    basename = os.path.splitext(os.path.basename(path))[0]
+    state['export_name'] = f"{basename}_annotated"
+    if export_box:
+        export_box.set_val(state['export_name'])
+    return True
+
+
+def overlap(a, b, thresh=0.5):
+    x0, y0, w0, h0 = a; x1, y1, w1, h1 = b
+    xa = max(x0, x1); ya = max(y0, y1)
+    xb = min(x0+w0, x1+w1); yb = min(y0+h0, y1+h1)
+    if xb < xa or yb < ya: return False
+    inter = (xb-xa) * (yb-ya)
+    return inter > thresh * min(w0*h0, w1*h1)
+
+if os.path.exists(IMG_PATH):
+    load_image(IMG_PATH)
+else:
+    img = np.ones((400,600,3),dtype=np.uint8)*255
+    gray = np.ones((400,600),dtype=np.uint8)*255
+    faces = np.array([])
+
+plt.style.use('default')
+fig, ax = plt.subplots(figsize=(12,9))
+fig.patch.set_facecolor('white')
+plt.subplots_adjust(left=0.1,bottom=0.25,right=0.9,top=0.92)
+ax.axis('off')
+
+def draw(target_ax=None):
+    a = target_ax or ax
+    a.clear()
+    a.imshow(img)
+    a.axis('off')
+    # Texto de fecha y ubicación
+    for i, txt in enumerate([state['date'], state['location']]):
+        a.text(0.01, 0.98 - i*0.04, txt, transform=a.transAxes,
+               fontsize=12, color='yellow', va='top',
+               path_effects=[pe.Stroke(linewidth=3, foreground='black'), pe.Normal()])
+    # Pie de página
+    if state['footer_text'].strip():
+        a.text(0.5, -0.02, state['footer_text'], transform=a.transAxes,
+               fontsize=10, color='white', ha='center', va='top',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
+    # Rectángulos y etiquetas de caras
+    for i, (x, y, w, h) in enumerate(faces):
+        if i in state['skip']: continue
+        m = state['margin']
+        lw = state['linewidth'] + (2 if state['selected'] == i else 0)
+        col = (1, 0, 0) if state['selected'] == i else state['color']
+        rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
+                                 linewidth=lw, edgecolor=col, facecolor='none')
+        a.add_patch(rect)
+        a.text(x-m, y-m-5, state['names'][i], fontsize=10,
+               color=col, va='bottom',
+               path_effects=[pe.Stroke(linewidth=2, foreground='black'), pe.Normal()])
+    # Información inferior
+    info = f"Caras: {len(faces)} | Anotadas: {len([i for i in range(len(faces)) if i not in state['skip']])}"
+    a.text(0.99, 0.01, info, transform=a.transAxes,
+           fontsize=10, color='white', ha='right', va='bottom',
+           bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
+    if target_ax is None:
+        fig.canvas.draw_idle()
+
+# Export usa la figura principal para mantener paridad exacta
+def export(event):
+     try:
+         # Redibuja para capturar el estado actual con todos los efectos
+         draw()
+         fig.canvas.draw()
+         filename = f"{state['export_name']}.png"
+         # Guardar conservando el facecolor de la figura y preservando transparencias
+         fig.savefig(
+             filename,
+             bbox_inches='tight',
+             pad_inches=0.1,
+             dpi=300,
+             facecolor=fig.get_facecolor(),
+             transparent=False
+         )
+         metadata = [
+             {'index': i, 'bbox': [int(x), int(y), int(w), int(h)], 'name': state['names'][i]}
+             for i, (x, y, w, h) in enumerate(faces) if i not in state['skip']
+         ]
+         tk.messagebox.showinfo("Export Exitoso", f"Guardado: {filename}\nPersonas anotadas: {len(metadata)}")
+     except Exception as e:
+         tk.messagebox.showerror("Error de Export", str(e))
+
+def on_click(event):
+    if event.inaxes != ax:
+        return
+    if event.xdata is None or event.ydata is None:
+        return
+    x0, y0 = event.xdata, event.ydata
+    sel = None
+    for i, (x, y, w, h) in enumerate(faces):
+        if i in state['skip']:
+            continue
+        m = state['margin']
+        if x-m <= x0 <= x+w+m and y-m <= y0 <= y+h+m:
+            sel = i
+            break
+    if sel != state['selected']:
+        state['selected'] = sel
+        if sel is not None and rename_box is not None:
+            rename_box.set_val(state['names'][sel])
+        draw()
+
+def update_margin(val):
+    state['margin'] = int(val)
+    draw()
+
+def update_linewidth(val):
+    state['linewidth'] = int(val)
+    draw()
+
+def pick_color(event):
+    try:
+        current_color = '#%02x%02x%02x' % tuple(int(c*255) for c in state['color'])
+        color_result = askcolor(color=current_color, title="Seleccionar color de anotación")
+        if color_result[0]:
+            state['color'] = tuple(c/255 for c in color_result[0])
+            draw()
+    except Exception as e:
+        pass
+
+def rename_submit(text):
+    idx = state['selected']
+    if idx is not None:
+        if text.strip() == '':
+            state['names'][idx] = f'Person {idx+1}'
+        else:
+            state['names'][idx] = text.strip()
+        draw()
+
+def skip_toggle(event):
+    idx = state['selected']
+    if idx is not None:
+        if idx in state['skip']:
+            state['skip'].remove(idx)
+        else:
+            state['skip'].add(idx)
+        state['selected'] = None
+        draw()
+
+def pick_date(event):
+    try:
+        current_date = state['date']
+        new_date = tk.simpledialog.askstring(
+            'Seleccionar Fecha', 
+            f'Ingrese la fecha (YYYY-MM-DD)\nFecha actual: {current_date}',
+            initialvalue=current_date
+        )
+        if new_date:
+            try:
+                datetime.datetime.strptime(new_date, '%Y-%m-%d')
+                state['date'] = new_date
+                draw()
+            except ValueError:
+                tk.messagebox.showerror("Error", "Formato de fecha inválido. Use YYYY-MM-DD")
+    except:
+        pass
+
+def footer_submit(text):
+    state['footer_text'] = text
+    draw()
+
+def export_name_submit(text):
+    if text.strip():
+        state['export_name'] = text.strip()
+
+def select_image(event):
+    try:
+        filetypes = [
+            ('Imágenes', '*.png *.jpg *.jpeg *.bmp *.tiff *.gif'),
+            ('PNG', '*.png'),
+            ('JPEG', '*.jpg *.jpeg'),
+            ('Todos los archivos', '*.*')
+        ]
+        new_path = filedialog.askopenfilename(
+            title="Seleccionar imagen para anotar",
+            filetypes=filetypes,
+            initialdir=os.path.dirname(state['current_image_path'])
+        )
+        if new_path:
+            success = load_image(new_path)
+            if success:
+                update_title()
+                draw()
+                tk.messagebox.showinfo("Éxito", 
+                    f"Nueva imagen cargada:\n{os.path.basename(new_path)}\n\nCaras detectadas: {len(faces)}")
+    except:
+        pass
+
+def location_submit(text):
+    state['location'] = text
+    draw()
+
+def redetect_faces(event=None):
+    if 'img' not in globals():
+        return
+    try:
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        sensitivity = int(state['sensitivity'])
+        faces_detected = cascade.detectMultiScale(
+            gray, 
+            scaleFactor=1.05 if sensitivity < 5 else 1.1, 
+            minNeighbors=sensitivity, 
+            minSize=(20, 20) if sensitivity < 5 else (30, 30)
+        )
+        global faces
+        faces = np.array(faces_detected)
+        old_names = state['names'].copy()
+        state['names'] = [old_names[i] if i < len(old_names) else f'Person {i+1}' for i in range(len(faces))]
+        state['skip'] = {i for i in state['skip'] if i < len(faces)}
+        if state['selected'] is not None and state['selected'] >= len(faces):
+            state['selected'] = None
+        draw()
+    except:
+        pass
+
+def update_sensitivity(val):
+    state['sensitivity'] = int(val)
+
+def export(event):
+    try:
+        export_image = f"{state['export_name']}.png"
+        fig_export, ax_export = plt.subplots(figsize=(12, 9), dpi=150)
+        fig_export.patch.set_facecolor('white')
+        ax_export.imshow(img)
+        ax_export.axis('off')
+        fig_export.subplots_adjust(left=0, bottom=0, right=1, top=1)
+        for i, label in enumerate([state['date'], state['location']]):
+            y = 0.98 - i*0.04
+            ax_export.text(0.01, y, label, transform=ax_export.transAxes,
+                    fontsize=12, color='white', va='top', weight='bold',
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor='black', alpha=0.8))
+        if state['footer_text'].strip():
+            ax_export.text(0.5, 0.02, state['footer_text'], transform=ax_export.transAxes,
+                    fontsize=11, color='white', ha='center', va='bottom',
+                    bbox=dict(boxstyle="round,pad=0.4", facecolor='black', alpha=0.9))
+        for i, (x, y, w, h) in enumerate(faces):
+            if i in state['skip']:
+                continue
+            m = state['margin']
+            color = state['color']
+            lw = state['linewidth']
+            rect = patches.Rectangle((x-m, y-m), w+2*m, h+2*m,
+                                   linewidth=lw, edgecolor=color, facecolor='none')
+            ax_export.add_patch(rect)
+            ax_export.text(x-m, y-m-8, state['names'][i], fontsize=11, weight='bold',
+                    color=color, va='bottom',
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.9))
+        fig_export.savefig(export_image, bbox_inches='tight', pad_inches=0.1, dpi=300, 
+                          facecolor='white', edgecolor='none')
+        plt.close(fig_export)
+        metadata = [{'index': i, 'bbox': [int(x),int(y),int(w),int(h)], 'name': state['names'][i]}
+                    for i,(x,y,w,h) in enumerate(faces) if i not in state['skip']]
+        tk.messagebox.showinfo("Export Exitoso", 
+                               f"Imagen guardada: {export_image}\n\nPersonas anotadas: {len(metadata)}")
+    except Exception as e:
+        tk.messagebox.showerror("Error de Export", str(e))
+
+def update_title():
+    current_file = os.path.basename(state['current_image_path'])
+    fig.suptitle(f'IMCORE Face Annotation Tool - {current_file}', 
+                fontsize=16, fontweight='bold', y=0.96)
+
+update_title()
+
+# === CONTROLES ===
+y1 = 0.20
+ax_load = plt.axes([0.1, y1, 0.15, 0.03])
+btn_load = Button(ax_load, 'Cargar Imagen')
+btn_load.on_clicked(select_image)
+ax_sens = plt.axes([0.3, y1, 0.25, 0.02])
+sld_sens = Slider(ax_sens, 'Sensibilidad', 1, 10, valinit=state['sensitivity'], valfmt='%d')
+sld_sens.on_changed(update_sensitivity)
+ax_redet = plt.axes([0.58, y1, 0.12, 0.03])
+btn_redet = Button(ax_redet, 'Redetectar')
+btn_redet.on_clicked(redetect_faces)
+ax_sens_help = plt.axes([0.72, y1, 0.18, 0.03])
+ax_sens_help.text(0, 0.5, '1=más caras, 10=más estricto',
+                 fontsize=8, va='center', style='italic', color='gray')
+ax_sens_help.axis('off')
+
+# Fila 2: Margen, grosor y color
+
+y2 = 0.15
+ax_margin = plt.axes([0.1, y2, 0.25, 0.02])
+sld_margin = Slider(ax_margin, 'Margen', 0, 100, valinit=state['margin'], valfmt='%d')
+sld_margin.on_changed(update_margin)
+ax_lw = plt.axes([0.4, y2, 0.25, 0.02])
+sld_lw = Slider(ax_lw, 'Grosor', 1, 10, valinit=state['linewidth'], valfmt='%d')
+sld_lw.on_changed(update_linewidth)
+ax_color = plt.axes([0.7, y2, 0.1, 0.03])
+btn_color = Button(ax_color, 'Color')
+btn_color.on_clicked(pick_color)
+
+# Fila 3: Renombrar y omitir
+
+y3 = 0.10
+ax_rename = plt.axes([0.1, y3, 0.3, 0.03])
+rename_box = TextBox(ax_rename, 'Nombre')
+rename_box.on_submit(rename_submit)
+ax_skip = plt.axes([0.45, y3, 0.1, 0.03])
+btn_skip = Button(ax_skip, 'Omitir')
+btn_skip.on_clicked(skip_toggle)
+
+# Fila 4: Fecha y ubicación
+
+y4 = 0.05
+ax_date = plt.axes([0.1, y4, 0.1, 0.03])
+btn_date = Button(ax_date, 'Fecha')
+btn_date.on_clicked(pick_date)
+ax_loc = plt.axes([0.25, y4, 0.3, 0.03])
+location_box = TextBox(ax_loc, 'Ubicación', initial=state['location'])
+location_box.on_submit(location_submit)
+
+# Fila 5: Pie de página y exportación
+
+y5 = 0.00
+ax_footer = plt.axes([0.1, y5, 0.4, 0.03])
+footer_box = TextBox(ax_footer, 'Pie de página', initial=state['footer_text'])
+footer_box.on_submit(footer_submit)
+ax_export = plt.axes([0.55, y5, 0.3, 0.03])
+export_box = TextBox(ax_export, 'Exportar como', initial=state['export_name'])
+export_box.on_submit(export_name_submit)
+ax_expbtn = plt.axes([0.90, y5+0.01, 0.08, 0.02])
+btn_exp = Button(ax_expbtn, 'Guardar')
+btn_exp.on_clicked(export)
+
+# Conectar eventos
+fig.canvas.mpl_connect('button_press_event', on_click)
+
+# Ejecutar
+draw()
+plt.show()
